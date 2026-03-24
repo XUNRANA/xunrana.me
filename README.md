@@ -1,18 +1,17 @@
 设计一个个人网站/博客需要考虑以下几个方面：
-最终部署到服务器上（Linux）
-服务器配置：
+
+远程服务器配置（VPS）：
+racknerd-25caaa2 (148.135.67.222)
+18$/year
 操作系统 (OS): Ubuntu 24.04 64 Bit 
 内存 (Memory): 2.5 GB 
 硬盘 (Disk Space): 45 GB 
 流量 (Bandwidth): 2.93 TB/月 
-部署到个人域名xunrana.me
+
+个人域名：
+xunrana.me 
 
 技术栈选择：
-前端：
-HTML/CSS/JavaScript
-后端：
-Java
-框架：
-Spring Boot
-数据库：
-MySQL
+有完整的前后端、数据库、考虑并发等等....
+目前主流市场、大厂、大公司所用到的技术栈
+本质上还是想学习技术栈、锻炼技术

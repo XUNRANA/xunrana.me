@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="me.xunrana.blog.mapper.CategoryMapper">
+
+    <!-- Select all categories with published article count -->
+    <select id="selectCategoryWithCount" resultType="me.xunrana.blog.model.vo.CategoryVO">
+        SELECT
+            c.id,
+            c.name,
+            c.slug,
+            c.description,
+            c.sort_order AS sortOrder,
+            c.created_at AS createdAt,
+            COUNT(a.id) AS articleCount
+        FROM category c
+                 LEFT JOIN article a ON c.id = a.category_id AND a.status = 1
+        GROUP BY c.id, c.name, c.slug, c.description, c.sort_order, c.created_at
+        ORDER BY c.sort_order ASC, c.created_at DESC
+    </select>
+
+</mapper>

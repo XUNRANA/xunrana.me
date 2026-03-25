@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="me.xunrana.blog.mapper.ArticleMapper">
+
+    <!-- Result map for ArticleVO -->
+    <resultMap id="articleVOResultMap" type="me.xunrana.blog.model.vo.ArticleVO">
+        <id column="id" property="id"/>
+        <result column="title" property="title"/>
+        <result column="slug" property="slug"/>
+        <result column="summary" property="summary"/>
+        <result column="cover_image" property="coverImage"/>
+        <result column="category_id" property="categoryId"/>
+        <result column="category_name" property="categoryName"/>
+        <result column="author_id" property="authorId"/>
+        <result column="author_name" property="authorName"/>
+        <result column="status" property="status"/>
+        <result column="is_top" property="isTop"/>
+        <result column="view_count" property="viewCount"/>
+        <result column="like_count" property="likeCount"/>
+        <result column="comment_count" property="commentCount"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="published_at" property="publishedAt"/>
+        <collection property="tags" ofType="me.xunrana.blog.model.vo.TagVO"
+                    column="id" select="selectTagsByArticleId"/>
+    </resultMap>
+
+    <!-- Result map for ArticleDetailVO -->
+    <resultMap id="articleDetailVOResultMap" type="me.xunrana.blog.model.vo.ArticleDetailVO">
+        <id column="id" property="id"/>
+        <result column="title" property="title"/>
+        <result column="slug" property="slug"/>
+        <result column="summary" property="summary"/>
+        <result column="content" property="content"/>
+        <result column="cover_image" property="coverImage"/>
+        <result column="category_id" property="categoryId"/>
+        <result column="category_name" property="categoryName"/>
+        <result column="author_id" property="authorId"/>
+        <result column="author_name" property="authorName"/>
+        <result column="status" property="status"/>
+        <result column="is_top" property="isTop"/>
+        <result column="view_count" property="viewCount"/>
+        <result column="like_count" property="likeCount"/>
+        <result column="comment_count" property="commentCount"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="published_at" property="publishedAt"/>
+        <collection property="tags" ofType="me.xunrana.blog.model.vo.TagVO"
+                    column="id" select="selectTagsByArticleId"/>
+    </resultMap>
+
+    <!-- Nested query: select tags for a given article -->
+    <select id="selectTagsByArticleId" resultType="me.xunrana.blog.model.vo.TagVO">
+        SELECT t.id, t.name, t.slug, t.created_at AS createdAt
+        FROM tag t
+                 INNER JOIN article_tag at2 ON t.id = at2.tag_id
+        WHERE at2.article_id = #{id}
+    </select>
+
+    <!-- Paginated article list query -->
+    <select id="selectArticlePage" resultMap="articleVOResultMap">
+        SELECT
+            a.id,
+            a.title,
+            a.slug,
+            a.summary,
+            a.cover_image,
+            a.category_id,
+            c.name AS category_name,
+            a.author_id,
+            u.nickname AS author_name,
+            a.status,
+            a.is_top,
+            a.view_count,
+            a.like_count,
+            a.comment_count,
+            a.created_at,
+            a.published_at
+        FROM article a
+                 LEFT JOIN category c ON a.category_id = c.id
+                 LEFT JOIN user u ON a.author_id = u.id
+        <where>
+            <if test="query.categoryId != null">
+                AND a.category_id = #{query.categoryId}
+            </if>
+            <if test="query.tagId != null">
+                AND a.id IN (
+                    SELECT at2.article_id FROM article_tag at2 WHERE at2.tag_id = #{query.tagId}
+                )
+            </if>
+            <if test="query.status != null">
+                AND a.status = #{query.status}
+            </if>
+            <if test="query.keyword != null and query.keyword != ''">
+                AND (a.title LIKE CONCAT('%', #{query.keyword}, '%')
+                     OR a.summary LIKE CONCAT('%', #{query.keyword}, '%'))
+            </if>
+        </where>
+        ORDER BY a.is_top DESC, a.created_at DESC
+    </select>
+
+    <!-- Full article detail by slug -->
+    <select id="selectArticleBySlug" resultMap="articleDetailVOResultMap">
+        SELECT
+            a.id,
+            a.title,
+            a.slug,
+            a.summary,
+            a.content,
+            a.cover_image,
+            a.category_id,
+            c.name AS category_name,
+            a.author_id,
+            u.nickname AS author_name,
+            a.status,
+            a.is_top,
+            a.view_count,
+            a.like_count,
+            a.comment_count,
+            a.created_at,
+            a.published_at
+        FROM article a
+                 LEFT JOIN category c ON a.category_id = c.id
+                 LEFT JOIN user u ON a.author_id = u.id
+        WHERE a.slug = #{slug}
+        LIMIT 1
+    </select>
+
+</mapper>

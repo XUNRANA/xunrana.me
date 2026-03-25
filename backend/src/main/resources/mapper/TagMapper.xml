@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="me.xunrana.blog.mapper.TagMapper">
+
+    <!-- Select all tags with published article count -->
+    <select id="selectTagWithCount" resultType="me.xunrana.blog.model.vo.TagVO">
+        SELECT
+            t.id,
+            t.name,
+            t.slug,
+            t.created_at AS createdAt,
+            COUNT(a.id) AS articleCount
+        FROM tag t
+                 LEFT JOIN article_tag at2 ON t.id = at2.tag_id
+                 LEFT JOIN article a ON at2.article_id = a.id AND a.status = 1
+        GROUP BY t.id, t.name, t.slug, t.created_at
+        ORDER BY articleCount DESC, t.created_at DESC
+    </select>
+
+    <!-- Select tags for a given article -->
+    <select id="selectTagsByArticleId" resultType="me.xunrana.blog.model.entity.Tag">
+        SELECT
+            t.id,
+            t.name,
+            t.slug,
+            t.created_at AS createdAt
+        FROM tag t
+                 INNER JOIN article_tag at2 ON t.id = at2.tag_id
+        WHERE at2.article_id = #{articleId}
+    </select>
+
+</mapper>

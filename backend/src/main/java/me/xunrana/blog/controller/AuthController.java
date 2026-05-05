@@ -6,6 +6,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import me.xunrana.blog.common.Result;
+import me.xunrana.blog.common.annotation.RateLimit;
 import me.xunrana.blog.model.dto.LoginDTO;
 import me.xunrana.blog.model.vo.LoginVO;
 import me.xunrana.blog.model.vo.UserVO;
@@ -24,6 +25,7 @@ public class AuthController {
 
     @PostMapping("/login")
     @Operation(summary = "用户登录")
+    @RateLimit(maxRequests = 10, timeWindow = 60)
     public Result<LoginVO> login(@RequestBody @Valid LoginDTO loginDTO) {
         LoginVO loginVO = authService.login(loginDTO);
         return Result.success(loginVO);

@@ -1293,3 +1293,70 @@ WARN  m.x.b.exception.GlobalExceptionHandler - 接口限流: code=4001, message=
 - **漏桶**：请求进入桶中排队，以恒定速率流出。无论输入多猛，输出永远是匀速的。不允许任何突发。适合场景：需要严格控制处理速率的场景，如消息队列的消费速率控制、网络流量整形。
 
 一句话区别：**令牌桶控制的是"平均速率"，允许瞬间突发；漏桶控制的是"瞬时速率"，绝对匀速**。
+
+---
+
+## 8. 实战记录（Implementation Notes）
+
+### 8.1 ZSET member 必须唯一：时间戳 + UUID
+
+最容易踩的坑：用单纯的 `System.currentTimeMillis()` 做 member。两个并发请求在同一毫秒到达，第二次 `ZADD` 会**覆盖**第一次（ZSET 中相同 member 只会更新 score）。结果是：实际接收了 2 个请求，但 `ZCARD` 只看到 1 个，限流被绕过。
+
+修复：
+
+```java
+String member = now + "-" + UUID.randomUUID();   // 时间戳-UUID 复合
+redisTemplate.opsForZSet().add(key, member, now);
+```
+
+UUID 保证唯一性，时间戳用来排序与定位。**面试中怎么说**：考察的是对 Redis 数据结构语义的理解——ZSET 中 member 唯一、score 可重复。
+
+### 8.2 用 `@Before` 而不是 `@Around`
+
+限流不需要包围方法执行，超阈值直接抛异常即可。`@Before` 比 `@Around` 简单：
+
+```java
+@Before("@annotation(rateLimit)")
+public void checkRateLimit(JoinPoint joinPoint, RateLimit rateLimit) { ... }
+```
+
+注意类型是 `JoinPoint`（不是 `ProceedingJoinPoint`），后者是 `@Around` 专用。如果不小心写错了类型，编译过但运行时切面不生效——表现是限流注解像没加一样。
+
+### 8.3 限流维度的取舍：方法名 + IP
+
+Key 设计：
+
+```
+blog:rate_limit:{className}.{methodName}:{ip}
+```
+
+- 不同接口独立计数（防止刷文章列表把发评论限流额度也吃掉）
+- 不同 IP 独立计数（不会让一个攻击 IP 拉低正常用户的额度）
+
+**已知缺陷**：登录接口的 `IP` 维度无法防御代理池攻击。生产改进可叠加用户名维度（同一用户名 5 分钟内尝试登录次数）。
+
+### 8.4 `expire` 兜底很重要，但 +1 秒不能省
+
+```java
+redisTemplate.expire(key, rateLimit.timeWindow() + 1L, TimeUnit.SECONDS);
+```
+
+**为什么 +1**：算法本身依赖 `removeRangeByScore` 清理窗口外记录，但若一个 key 在窗口内只来过一次就再也没人访问，那条记录会一直留着。`expire` 兜底清掉冷门 key。窗口本身是 60s，过期时间设 60s 会让最后一秒到达的请求刚好在 `expire` 触发瞬间消失，等于丢失了一个有效请求。**+1 秒是给最后一波请求留的"宽限期"**。
+
+### 8.5 `removeRangeByScore` 边界：闭区间还是开区间？
+
+```java
+redisTemplate.opsForZSet().removeRangeByScore(key, 0, windowStart);
+```
+
+Spring Data Redis 的 `removeRangeByScore(key, min, max)` 调用的是 `ZREMRANGEBYSCORE`，**两端都是闭区间**。也就是说 `windowStart` 这一刻的请求会被删掉。理论上应该用 `windowStart - 1` 或者 `(0, windowStart)` 这种排他写法。但限流场景丢一两条边界请求无所谓，所以保持简洁。如果做秒杀级的精确限流再考虑这个边界。
+
+### 8.6 高并发下的非原子性问题
+
+整个滑动窗口算法由 4 个 Redis 命令组成：`removeRangeByScore` → `zCard` → `zAdd` → `expire`。两个并发请求可能同时通过 `zCard < max` 的判断，导致超阈值放行。
+
+- 博客场景 QPS 不高，问题不大
+- 真要解决：用 Lua 脚本把 4 个命令合并成原子操作（教程第 7 节有详细写法）
+
+**面试加分项**：能主动说出"当前实现存在 race，未来用 Lua 脚本优化"——比写完不知道有问题强得多。
+

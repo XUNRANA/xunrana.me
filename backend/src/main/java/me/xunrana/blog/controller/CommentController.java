@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import me.xunrana.blog.common.Result;
+import me.xunrana.blog.common.annotation.RateLimit;
 import me.xunrana.blog.model.dto.CommentDTO;
 import me.xunrana.blog.model.vo.CommentVO;
 import me.xunrana.blog.service.CommentService;
@@ -36,6 +37,7 @@ public class CommentController {
 
     @PostMapping("/articles/{articleId}/comments")
     @Operation(summary = "发表评论")
+    @RateLimit(maxRequests = 5, timeWindow = 60)
     public Result<Void> addComment(
             @Parameter(description = "文章ID") @PathVariable Long articleId,
             @Valid @RequestBody CommentDTO dto,

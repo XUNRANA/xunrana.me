@@ -6,6 +6,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import me.xunrana.blog.common.Result;
+import me.xunrana.blog.common.annotation.OpLog;
 import me.xunrana.blog.model.dto.TagDTO;
 import me.xunrana.blog.service.TagService;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -26,6 +27,7 @@ public class AdminTagController {
 
     @PostMapping("")
     @Operation(summary = "创建标签")
+    @OpLog(module = "标签管理", operation = "创建标签")
     public Result<Void> createTag(@Valid @RequestBody TagDTO dto) {
         tagService.createTag(dto);
         return Result.success();
@@ -33,6 +35,7 @@ public class AdminTagController {
 
     @PutMapping("/{id}")
     @Operation(summary = "更新标签")
+    @OpLog(module = "标签管理", operation = "更新标签")
     public Result<Void> updateTag(
             @Parameter(description = "标签ID") @PathVariable Long id,
             @Valid @RequestBody TagDTO dto) {
@@ -42,6 +45,7 @@ public class AdminTagController {
 
     @DeleteMapping("/{id}")
     @Operation(summary = "删除标签")
+    @OpLog(module = "标签管理", operation = "删除标签")
     public Result<Void> deleteTag(
             @Parameter(description = "标签ID") @PathVariable Long id) {
         tagService.deleteTag(id);

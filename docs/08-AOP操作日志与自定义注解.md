@@ -1454,3 +1454,98 @@ mysql> SELECT * FROM operation_log ORDER BY created_at DESC LIMIT 1;
 ### Q7: 解释 AOP 中切面、切入点、通知之间的关系
 
 **答**：**切面**（Aspect）是一个类，封装了横切关注点的完整逻辑，用 `@Aspect` 标注。**切入点**（Pointcut）定义了"拦截哪些方法"的规则，用 `@Pointcut` 注解和表达式定义（如 `@annotation(OperationLog)` 表示拦截所有标注了 `@OperationLog` 的方法）。**通知**（Advice）是"拦截后做什么事"的具体逻辑，用 `@Before`、`@After`、`@Around` 等注解标注。三者的关系是：一个切面包含一个或多个切入点和通知；切入点负责匹配连接点（即确定拦截范围）；通知引用切入点并定义拦截后的执行逻辑。
+
+---
+
+## 11. 实战记录（Implementation Notes）
+
+### 11.1 切入点表达式：用 `@annotation(opLog)` 而不是 `execution(...)`
+
+教程里讲了两种切入点写法：`@annotation(OpLog)` 拦截所有标注了 `@OpLog` 的方法；`execution(* me.xunrana.blog.controller.admin..*(..))` 拦截某个包下的所有方法。本项目选了前者：
+
+```java
+@Around("@annotation(opLog)")
+public Object around(ProceedingJoinPoint joinPoint, OpLog opLog) throws Throwable
+```
+
+参数名 `opLog` 与表达式中的 `@annotation(opLog)` 必须**完全一致**，Spring AOP 通过名字匹配反向注入注解实例。这样 `opLog.module()`、`opLog.operation()` 直接拿到注解参数，不用再写 `joinPoint.getSignature().getMethod().getAnnotation(OpLog.class)` 那种笨办法。
+
+**面试加分项**：聊到为什么这么写时强调"声明式"——业务方法上挂注解就开启日志，零侵入；包路径切入点则会"误伤"路径下其他不需要记录日志的方法。
+
+### 11.2 异常路径也要记录：try / finally + Throwable
+
+最早只是 `result = proceed(); 记录日志; return result;`。但业务方法抛异常时 `proceed()` 直接 throw 出去，日志根本没记下来——而恰恰是异常请求最值得审计。
+
+最终结构：
+
+```java
+try {
+    result = joinPoint.proceed();
+    return result;
+} catch (Throwable t) {
+    error = t;
+    throw t;
+} finally {
+    saveOperationLog(joinPoint, opLog, duration, error);
+}
+```
+
+注意**捕获 `Throwable` 而不是 `Exception`**——`Error`（如 OOM）也要记录后重抛，让全局异常处理器接管。
+
+### 11.3 参数序列化的"不可序列化对象"陷阱
+
+`AdminFileController.uploadImage(MultipartFile file)` 的参数是 `MultipartFile`，Jackson 序列化它会抛 `JsonMappingException`。同理 `HttpServletRequest`、`HttpServletResponse` 也不能直接序列化。
+
+实现里用 `Arrays.stream(args).map(...)` 把这三类对象替换成 `arg.getClass().getSimpleName()` 字符串占位：
+
+```java
+if (arg instanceof HttpServletRequest
+        || arg instanceof HttpServletResponse
+        || arg instanceof MultipartFile) {
+    return arg.getClass().getSimpleName();   // 比如 "MultipartFile"
+}
+```
+
+**面试中怎么说**：考察点是"AOP 切面写时的鲁棒性"——不能因为某个参数序列化失败就让日志切面挂掉。生产代码还应该用 `try/catch` 包住整个 `serializeArgs`，保底返回 `"[serialize error]"`。
+
+### 11.4 SecurityContextHolder 的 ThreadLocal 隐患
+
+切面里这样取当前用户：
+
+```java
+Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+```
+
+**坑**：`SecurityContextHolder` 默认用 `ThreadLocal` 存上下文。如果你后续把日志保存改成 `@Async`，新线程拿不到原线程的 `Authentication`，userId 永远是 null。
+
+解决方案：
+- 简单：保持同步保存（本项目做法，反正 mapper.insert 一次很快）
+- 进阶：`SecurityContextHolder.setStrategyName(MODE_INHERITABLETHREADLOCAL)`
+- 最佳：在切面里先把 userId 取出来作为局部变量，再传给异步任务
+
+### 11.5 anonymousUser 要过滤
+
+`auth.isAuthenticated()` 在匿名用户访问公开接口时也返回 true，这时 `auth.getName()` 是字符串 `"anonymousUser"`，不是数字。直接 `Long.parseLong("anonymousUser")` 会抛 `NumberFormatException`。所以代码里多了一步：
+
+```java
+if (auth != null && auth.isAuthenticated() && !"anonymousUser".equals(auth.getName())) {
+    try {
+        logEntity.setUserId(Long.parseLong(auth.getName()));
+    } catch (NumberFormatException ignored) { /* principal 可能不是 userId */ }
+}
+```
+
+我们的 `JwtAuthFilter` 把 userId 数字字符串塞进了 principal，所以正常情况能解析。但匿名访问、或 principal 类型变化时不能让切面崩溃。
+
+### 11.6 params 长度兜底
+
+某次测试时，`createArticle` 传了一个 5KB 的 markdown content，序列化后塞 DB。`operation_log.params` 字段如果是 `varchar(2000)`，会触发 `Data too long` 异常。代码加了兜底：
+
+```java
+if (json.length() > MAX_PARAMS_LENGTH) {
+    json = json.substring(0, MAX_PARAMS_LENGTH) + "...[truncated]";
+}
+```
+
+**进一步**：如果业务上要求记完整请求体，把 DB 字段改成 `MEDIUMTEXT`（最大 16MB）。当前博客场景 2KB 截断够用了。
+

@@ -7,6 +7,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import me.xunrana.blog.common.PageResult;
 import me.xunrana.blog.common.Result;
+import me.xunrana.blog.common.annotation.OpLog;
 import me.xunrana.blog.model.dto.ArticleDTO;
 import me.xunrana.blog.model.dto.ArticleQueryDTO;
 import me.xunrana.blog.model.vo.ArticleVO;
@@ -37,6 +38,7 @@ public class AdminArticleController {
 
     @PostMapping("")
     @Operation(summary = "创建文章")
+    @OpLog(module = "文章管理", operation = "创建文章")
     public Result<Void> createArticle(@Valid @RequestBody ArticleDTO dto,
                                       Authentication authentication) {
         Long userId = Long.parseLong(authentication.getName());
@@ -46,6 +48,7 @@ public class AdminArticleController {
 
     @PutMapping("/{id}")
     @Operation(summary = "更新文章")
+    @OpLog(module = "文章管理", operation = "更新文章")
     public Result<Void> updateArticle(
             @Parameter(description = "文章ID") @PathVariable Long id,
             @Valid @RequestBody ArticleDTO dto) {
@@ -55,6 +58,7 @@ public class AdminArticleController {
 
     @DeleteMapping("/{id}")
     @Operation(summary = "删除文章")
+    @OpLog(module = "文章管理", operation = "删除文章")
     public Result<Void> deleteArticle(
             @Parameter(description = "文章ID") @PathVariable Long id) {
         articleService.deleteArticle(id);

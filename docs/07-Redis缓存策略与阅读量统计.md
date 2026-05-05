@@ -1437,3 +1437,56 @@ curl http://localhost:8080/api/v1/articles/my-first-post
 ### Q8: 定时同步浏览量的方案，如何处理同步期间新增的浏览量？
 
 **答**：定时同步的流程是：先 `HGETALL` 获取所有浏览增量，然后批量 UPDATE 到 MySQL，最后 `DEL` 清空 Hash。在 `HGETALL` 和 `DEL` 之间如果有新的浏览请求执行了 `HINCRBY`，这些新增的浏览量会在 `DEL` 时被一起删除，导致丢失。对于博客场景，这是可接受的最终一致性——浏览量不是金融数据，丢失几次计数无关紧要。如果需要精确计数，可以使用 Redis Lua 脚本将"读取并删除"做成原子操作，或者使用 `HGETALL` 后逐个 `HDEL` 已同步的 field 而不是整体删除。
+
+---
+
+## 12. 实战记录（Implementation Notes）
+
+> 本节是实现 `ArticleCacheService` 时的真实决策与踩坑记录，与上文教学内容互为补充。
+
+### 12.1 序列化选择：自带 `ObjectMapper` 而不是 `RedisTemplate<String, Object>`
+
+`RedisConfig` 已经提供了一个带泛型类型的 `RedisTemplate<String, Object>` Bean（启用了 `activateDefaultTyping`），可以直接 `set(key, articleDetailVO)` 让 Redis 自己序列化。但实际实现时我选择了 `StringRedisTemplate` + 手动 `ObjectMapper.writeValueAsString`：
+
+- **可读性**：Redis 里存的是纯 JSON 字符串，`redis-cli> GET blog:article:detail:hello-world` 直接看得懂；启用 `defaultTyping` 后值里会被多塞一层类型信息（`["me.xunrana.blog.model.vo.ArticleDetailVO", {...}]`），调试时不友好
+- **解耦**：序列化策略与 Redis 配置解耦，未来要换成 Protobuf / MessagePack 不用动 RedisTemplate
+- **避免 ClassNotFound**：开启 `defaultTyping` 后跨服务/跨版本传输时，对端没有同名类就会反序列化失败
+
+**面试中怎么说**：考察点是"序列化 vs 业务可读性的权衡"。能讲出 `defaultTyping` 的 ClassCastException 风险即可加分。
+
+### 12.2 `LocalDateTime` 序列化坑：jackson 默认不支持
+
+`ArticleDetailVO` 含 `LocalDateTime createdAt`。Jackson 默认会把它序列化成数组 `[2026,5,5,12,30,0]` —— 既不可读也无法被前端 dayjs 直接解析。Spring Boot 的自动配置会注册 `JavaTimeModule` 并启用 `WRITE_DATES_AS_TIMESTAMPS=false`，所以 Web 层返回的 JSON 是 `"2026-05-05T12:30:00"`。但**Redis 的 ObjectMapper 不一定走 Spring 的全局配置**——如果你 `new ObjectMapper()`，就会回到默认行为。
+
+**本项目做法**：直接 `@RequiredArgsConstructor` 注入 Spring 容器中那个 `ObjectMapper` Bean，复用 `JavaTimeModule` 配置。
+
+### 12.3 写后失效要在事务提交后做
+
+`ArticleServiceImpl.updateArticle` 最初只是 `articleCacheService.evictArticleCache(slug)` 直接调用。但仔细想：方法标了 `@Transactional`，如果删完缓存后业务异常导致事务回滚，DB 还是旧数据但缓存已被清掉，下一次读会回填一份**错误的旧数据**。
+
+```java
+TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+    @Override public void afterCommit() { articleCacheService.evictArticleCache(oldSlug); }
+});
+```
+
+`afterCommit()` 仅在事务确实提交后触发；如果无事务（被外层调用绕过 @Transactional）就降级为同步删。
+
+**进阶**：还可以做"延迟双删"——afterCommit 立即删一次，1 秒后再删一次，覆盖事务提交瞬间到删除之间可能涌入的并发读把旧值重新写回缓存的窗口。本项目暂未实现，作为后续优化点。
+
+### 12.4 更新 slug 时要用旧 slug 删除
+
+`ArticleDTO` 不一定带 slug 字段（项目里 slug 是从 title 自动生成的），但更新文章可能改 title 进而改 slug。所以在 `BeanUtil.copyProperties` 之前先 `String oldSlug = existing.getSlug();` 保存旧值，事务提交后用 `oldSlug` 删缓存。否则会留下一份永远访问不到的孤儿缓存条目，浪费 30min 的 TTL。
+
+### 12.5 防穿透的两种实现选择
+
+教程里写的是 "DB 查不到 → 缓存空字符串 60s"。本实现里用的是 `""`（真正的空 String）而不是 `"null"` 字符串，配合 `cached.isEmpty()` 判断。这么做的好处是：
+
+- 命中合法数据时 `redisTemplate.opsForValue().get(key)` 返回非空 String，可直接反序列化
+- 命中防穿透标记时返回 `""`，无需反序列化即可识别
+- 完全 miss 时返回 `null`，走 DB 查询
+
+三种状态用 "null / 空字符串 / 非空字符串" 区分，比另起一个 boolean Hash 简洁。
+
+**坑点**：`StringRedisTemplate.opsForValue().get(key)` 中 key 不存在时返回 `null`，**不会抛异常**。所以判断顺序必须是：先判 `cached != null`，再判 `cached.isEmpty()`。
+

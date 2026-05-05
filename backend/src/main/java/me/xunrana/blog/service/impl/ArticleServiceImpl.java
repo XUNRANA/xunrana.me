@@ -4,7 +4,6 @@ import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +23,8 @@ import me.xunrana.blog.model.vo.ArticleVO;
 import me.xunrana.blog.service.ArticleService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -38,6 +39,7 @@ public class ArticleServiceImpl implements ArticleService {
     private final ArticleTagMapper articleTagMapper;
     private final TagMapper tagMapper;
     private final CategoryMapper categoryMapper;
+    private final ArticleCacheService articleCacheService;
 
     private static final Pattern NON_WORD_PATTERN = Pattern.compile("[^\\w\\u4e00-\\u9fa5-]");
     private static final Pattern MULTI_DASH_PATTERN = Pattern.compile("-{2,}");
@@ -51,15 +53,14 @@ public class ArticleServiceImpl implements ArticleService {
 
     @Override
     public ArticleDetailVO getArticleBySlug(String slug) {
-        ArticleDetailVO detail = articleMapper.selectArticleBySlug(slug);
+        // Cache Aside：先查缓存，未命中再查 DB 并回填
+        ArticleDetailVO detail = articleCacheService.getArticleBySlug(slug);
         if (detail == null) {
             throw new BusinessException(ErrorCode.ARTICLE_NOT_FOUND);
         }
 
-        // Increment view count asynchronously via direct SQL update
-        articleMapper.update(null, new LambdaUpdateWrapper<Article>()
-                .eq(Article::getId, detail.getId())
-                .setSql("view_count = view_count + 1"));
+        // 浏览量走 Redis HINCRBY，由定时任务批量同步到 MySQL
+        articleCacheService.incrementViewCount(detail.getId());
 
         // Get previous article (published, id < current, ordered by id DESC)
         ArticleVO prevArticle = findAdjacentArticle(detail.getId(), true);
@@ -129,6 +130,9 @@ public class ArticleServiceImpl implements ArticleService {
             throw new BusinessException(ErrorCode.ARTICLE_NOT_FOUND);
         }
 
+        // 记录旧 slug 用于缓存失效（更新时若改了 slug，需用旧 slug 删除）
+        final String oldSlug = existing.getSlug();
+
         BeanUtil.copyProperties(dto, existing, "id");
         existing.setUpdatedAt(LocalDateTime.now());
 
@@ -144,15 +148,43 @@ public class ArticleServiceImpl implements ArticleService {
         articleTagMapper.delete(new LambdaQueryWrapper<ArticleTag>()
                 .eq(ArticleTag::getArticleId, id));
         saveArticleTags(id, dto.getTagIds());
+
+        // 事务提交后再删缓存，避免事务回滚但缓存已删的脏读窗口
+        evictCacheAfterCommit(oldSlug);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteArticle(Long id) {
+        Article existing = articleMapper.selectById(id);
+        String slug = existing != null ? existing.getSlug() : null;
+
         articleMapper.deleteById(id);
         articleTagMapper.delete(new LambdaQueryWrapper<ArticleTag>()
                 .eq(ArticleTag::getArticleId, id));
         log.info("Article deleted: id={}", id);
+
+        evictCacheAfterCommit(slug);
+    }
+
+    /**
+     * 事务提交后再删除缓存。原因：若在事务内删，事务回滚则 DB 没改但缓存已被删，
+     * 下一次读会回填错误的旧数据；事务提交后删，确保 DB 已经是新数据。
+     */
+    private void evictCacheAfterCommit(String slug) {
+        if (slug == null || slug.isEmpty()) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    articleCacheService.evictArticleCache(slug);
+                }
+            });
+        } else {
+            articleCacheService.evictArticleCache(slug);
+        }
     }
 
     /**
